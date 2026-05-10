@@ -2,9 +2,10 @@
 
 import { useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
-import type { ChainId, TxProgress } from '@/lib/types';
+import type { ChainId } from '@/lib/types';
+import type { CollectProgress } from '@/lib/collect-types';
 import { CHAINS, isValidAddress, isValidPrivateKey } from '@/lib/chains';
-import { distributeTokens } from '@/lib/distribute';
+import { collectTokens } from '@/lib/collect';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -21,92 +22,100 @@ function chainLabel(id: ChainId) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function parseRecipients(raw: string): string[] {
+function parsePrivateKeys(raw: string): string[] {
   return raw
-    .split(/[\n,]+/)
+    .split(/[\n,;]+/)
     .map((s) => s.trim())
     .filter(Boolean);
 }
 
-function buildInitialProgress(n: number): TxProgress[] {
+function buildInitialProgress(n: number): CollectProgress[] {
   return Array.from({ length: n }, (_, i) => ({
     index: i,
-    recipient: '',
+    from: '',
     amount: '',
     symbol: '',
     status: 'idle' as const,
   }));
 }
 
+function truncateAddress(addr: string): string {
+  if (!addr) return '';
+  if (addr.length <= 12) return addr;
+  return `${addr.slice(0, 8)}...${addr.slice(-6)}`;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export default function Home() {
+export default function CollectPage() {
   // Form state
   const [chain, setChain] = useState<ChainId>('eth');
-  const [privateKey, setPrivateKey] = useState('');
-  const [recipientsRaw, setRecipientsRaw] = useState('');
+  const [recipient, setRecipient] = useState('');
+  const [privateKeysRaw, setPrivateKeysRaw] = useState('');
   const [amount, setAmount] = useState('');
-  const [tokenType, setTokenType] = useState<'native' | 'token'>('native');
-  const [tokenAddress, setTokenAddress] = useState('');
+  const [maxFeeGwei, setMaxFeeGwei] = useState('');
+  const [maxPriorityFeeGwei, setMaxPriorityFeeGwei] = useState('');
 
   // Tx state
-  const [progress, setProgress] = useState<TxProgress[]>([]);
+  const [progress, setProgress] = useState<CollectProgress[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
   const [summary, setSummary] = useState<{
-    sent: number;
+    collected: number;
     failed: number;
+    totalAmount: string;
   } | null>(null);
 
   const abortRef = useRef(false);
-  const inputKey = useRef(0); // force re-mount key to enable reset
+  const inputKey = useRef(0);
 
   // Derived
-  const recipients = parseRecipients(recipientsRaw);
+  const privateKeys = parsePrivateKeys(privateKeysRaw);
   const nativeLabel = CHAINS[chain].nativeCurrency;
+  const isEVM = chain !== 'sol';
+  const isSweepAll = !amount || amount.trim() === '';
 
   // Validate
+  const validRecipient = isValidAddress(chain, recipient);
+  const validKeys = privateKeys.length > 0 && privateKeys.every((k) => isValidPrivateKey(chain, k));
+  const validAmount = isSweepAll || Number(amount) > 0;
+
   const canSubmit =
     !running &&
-    isValidPrivateKey(chain, privateKey) &&
-    recipients.length > 0 &&
-    Number(amount) > 0 &&
-    (tokenType === 'native' || isValidAddress(chain, tokenAddress));
+    validRecipient &&
+    validKeys &&
+    validAmount;
 
   // -----------------------------------------------------------------------
-  // Chain switch helper – closes token address field when switching to
-  // native-only mode
+  // Chain switch helper
   // -----------------------------------------------------------------------
   const handleChainChange = useCallback((id: ChainId) => {
     setChain(id);
-    setTokenType('native');
-    setTokenAddress('');
+    setRecipient('');
+    setAmount('');
+    setMaxFeeGwei('');
+    setMaxPriorityFeeGwei('');
     setError('');
     setSummary(null);
     setProgress([]);
   }, []);
 
   // -----------------------------------------------------------------------
-  // Distribution runner
+  // Collect runner
   // -----------------------------------------------------------------------
-  const handleDistribute = useCallback(async () => {
+  const handleCollect = useCallback(async () => {
     setError('');
     setSummary(null);
     abortRef.current = false;
 
-    const parsed = parseRecipients(recipientsRaw);
-    const init = buildInitialProgress(parsed.length);
-    // Fill in recipient addresses right away
-    for (let i = 0; i < parsed.length; i++) {
-      init[i] = { ...init[i], recipient: parsed[i], amount };
-    }
+    const keys = parsePrivateKeys(privateKeysRaw);
+    const init = buildInitialProgress(keys.length);
     setProgress(init);
-
     setRunning(true);
 
-    const onUpdate = (i: number, p: Partial<TxProgress>) => {
+    const onUpdate = (i: number, p: Partial<CollectProgress>) => {
       setProgress((prev) => {
         const next = [...prev];
         next[i] = { ...next[i], ...p };
@@ -115,42 +124,48 @@ export default function Home() {
     };
 
     try {
-      await distributeTokens(
+      await collectTokens(
         {
           chain,
-          privateKey,
-          recipients: parsed,
-          isNative: tokenType === 'native',
-          tokenAddress:
-            tokenType === 'token' ? tokenAddress : undefined,
-          amount,
+          privateKeys: keys,
+          recipient,
+          amount: isSweepAll ? undefined : amount,
+          maxFeeGwei: maxFeeGwei || undefined,
+          maxPriorityFeeGwei: maxPriorityFeeGwei || undefined,
         },
         onUpdate,
       );
 
       // Build summary
       setProgress((prev) => {
-        const sent = prev.filter((t) => t.status === 'success').length;
+        const collected = prev.filter((t) => t.status === 'success').length;
         const failed = prev.filter((t) => t.status === 'failed').length;
-        setSummary({ sent, failed });
+        const totalAmount = prev
+          .filter((t) => t.status === 'success')
+          .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+        setSummary({
+          collected,
+          failed,
+          totalAmount: totalAmount.toFixed(6),
+        });
         return prev;
       });
     } catch (err: any) {
-      setError(err?.message || 'Distribution failed');
+      setError(err?.message || 'Collection failed');
     } finally {
       setRunning(false);
     }
-  }, [chain, privateKey, recipientsRaw, amount, tokenType, tokenAddress]);
+  }, [chain, privateKeysRaw, recipient, amount, isSweepAll, maxFeeGwei, maxPriorityFeeGwei]);
 
   // -----------------------------------------------------------------------
   // Reset
   // -----------------------------------------------------------------------
   const handleReset = useCallback(() => {
-    setPrivateKey('');
-    setRecipientsRaw('');
+    setRecipient('');
+    setPrivateKeysRaw('');
     setAmount('');
-    setTokenType('native');
-    setTokenAddress('');
+    setMaxFeeGwei('');
+    setMaxPriorityFeeGwei('');
     setProgress([]);
     setRunning(false);
     setError('');
@@ -168,11 +183,10 @@ export default function Home() {
         {/* Header */}
         <div className="text-center mb-10">
           <h1 className="text-4xl font-bold tracking-tight text-white">
-            Token Distributor
+            Token Collector
           </h1>
           <p className="mt-2 text-gray-400">
-            Send tokens to multiple wallets in one batch across ETH, BSC &amp;
-            Solana
+            Sweep native coins from multiple wallets into one destination
           </p>
         </div>
 
@@ -180,13 +194,13 @@ export default function Home() {
         <div className="flex gap-2 mb-6">
           <Link
             href="/"
-            className="flex-1 py-3 rounded-xl font-medium text-sm text-center transition-all duration-200 bg-indigo-600 text-white shadow-lg shadow-indigo-600/30"
+            className="flex-1 py-3 rounded-xl font-medium text-sm text-center transition-all duration-200 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-gray-200"
           >
             Distribute
           </Link>
           <Link
             href="/collect"
-            className="flex-1 py-3 rounded-xl font-medium text-sm text-center transition-all duration-200 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-gray-200"
+            className="flex-1 py-3 rounded-xl font-medium text-sm text-center transition-all duration-200 bg-indigo-600 text-white shadow-lg shadow-indigo-600/30"
           >
             Collect
           </Link>
@@ -221,135 +235,78 @@ export default function Home() {
             </div>
           </section>
 
-          {/* ── Private key ── */}
+          {/* ── Destination address ── */}
           <section>
             <label
-              htmlFor="pk"
+              htmlFor="recipient"
               className="block text-sm font-medium text-gray-300 mb-2"
             >
-              Source Wallet Private Key
+              Destination Address
             </label>
             <input
-              id="pk"
-              type="password"
+              id="recipient"
+              type="text"
               placeholder={
                 chain === 'sol'
-                  ? 'Base58 private key or JSON byte array...'
+                  ? 'So1anaAddress...'
                   : '0x...'
               }
-              value={privateKey}
-              onChange={(e) => setPrivateKey(e.target.value)}
+              value={recipient}
+              onChange={(e) => setRecipient(e.target.value.trim())}
               className="input-field font-mono text-sm"
               disabled={running}
               autoComplete="off"
-              key={`pk-${inputKey.current}`}
+              key={`recip-${inputKey.current}`}
             />
-            {privateKey &&
-              !isValidPrivateKey(chain, privateKey) &&
-              privateKey.length > 5 && (
+            {recipient &&
+              !validRecipient &&
+              recipient.length > 5 && (
                 <p className="mt-1 text-xs text-red-400">
-                  Invalid private key format for {CHAINS[chain].name}
+                  Invalid address format for {CHAINS[chain].name}
                 </p>
               )}
           </section>
 
-          {/* ── Recipients ── */}
+          {/* ── Source private keys ── */}
           <section>
             <label
-              htmlFor="recipients"
+              htmlFor="privateKeys"
               className="block text-sm font-medium text-gray-300 mb-2"
             >
-              Recipient Wallets
+              Source Wallet Private Keys
             </label>
             <textarea
-              id="recipients"
+              id="privateKeys"
               rows={5}
-              placeholder={`0x1234...\n0x5678...\n0x9abc...`}
-              value={recipientsRaw}
-              onChange={(e) => setRecipientsRaw(e.target.value)}
+              placeholder={
+                chain === 'sol'
+                  ? 'Base58 key or JSON array, one per line...'
+                  : '0x..., one per line...'
+              }
+              value={privateKeysRaw}
+              onChange={(e) => setPrivateKeysRaw(e.target.value)}
               className="input-field font-mono text-sm resize-none"
               disabled={running}
-              key={`rec-${inputKey.current}`}
+              key={`pks-${inputKey.current}`}
             />
             <div className="flex items-center justify-between mt-1.5">
               <p className="text-xs text-gray-500">
-                One address per line, or comma-separated
+                One key per line, or comma/semicolon separated
               </p>
-              {recipients.length > 0 && (
+              {privateKeys.length > 0 && (
                 <span className="text-xs text-indigo-400 font-medium">
-                  {recipients.length} wallet{recipients.length > 1 ? 's' : ''}
+                  {privateKeys.length} wallet{privateKeys.length > 1 ? 's' : ''}
                 </span>
               )}
             </div>
+            {privateKeys.length > 0 && !validKeys && (
+              <p className="mt-1 text-xs text-red-400">
+                One or more private keys have invalid format for {CHAINS[chain].name}
+              </p>
+            )}
           </section>
 
-          {/* ── Token type ── */}
-          <section>
-            <label className="block text-sm font-medium text-gray-300 mb-3">
-              Token Type
-            </label>
-            <div className="flex gap-3">
-              <button
-                type="button"
-                disabled={running}
-                onClick={() => setTokenType('native')}
-                className={`flex-1 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
-                  tokenType === 'native'
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-white/5 text-gray-400 hover:bg-white/10'
-                }`}
-              >
-                Native Coin ({nativeLabel})
-              </button>
-              <button
-                type="button"
-                disabled={running}
-                onClick={() => setTokenType('token')}
-                className={`flex-1 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
-                  tokenType === 'token'
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-white/5 text-gray-400 hover:bg-white/10'
-                }`}
-              >
-                Token Contract
-              </button>
-            </div>
-          </section>
-
-          {/* ── Token contract address ── */}
-          {tokenType === 'token' && (
-            <section>
-              <label
-                htmlFor="tokenAddr"
-                className="block text-sm font-medium text-gray-300 mb-2"
-              >
-                Token Contract Address
-              </label>
-              <input
-                id="tokenAddr"
-                type="text"
-                placeholder={
-                  chain === 'sol'
-                    ? 'Token mint address...'
-                    : '0x...'
-                }
-                value={tokenAddress}
-                onChange={(e) => setTokenAddress(e.target.value)}
-                className="input-field font-mono text-sm"
-                disabled={running}
-                key={`addr-${inputKey.current}`}
-              />
-              {tokenAddress &&
-                !isValidAddress(chain, tokenAddress) &&
-                tokenAddress.length > 5 && (
-                  <p className="mt-1 text-xs text-red-400">
-                    Invalid address format for {CHAINS[chain].name}
-                  </p>
-                )}
-            </section>
-          )}
-
-          {/* ── Amount ── */}
+          {/* ── Amount per wallet ── */}
           <section>
             <label
               htmlFor="amount"
@@ -362,7 +319,7 @@ export default function Home() {
                 id="amount"
                 type="text"
                 inputMode="decimal"
-                placeholder="0.0"
+                placeholder="Leave empty to sweep all"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ''))}
                 className="input-field text-lg pr-16"
@@ -370,24 +327,80 @@ export default function Home() {
                 key={`amt-${inputKey.current}`}
               />
               <span className="absolute right-4 top-1/2 -translate-y-1/2 text-sm text-gray-400 font-medium">
-                {tokenType === 'native' ? nativeLabel : 'Token'}
+                {nativeLabel}
               </span>
             </div>
-            {recipients.length > 0 && Number(amount) > 0 && (
+            {isSweepAll && (
+              <p className="mt-1.5 text-xs text-amber-400/80">
+                Sweep mode: will send max balance minus estimated gas fees
+              </p>
+            )}
+            {privateKeys.length > 0 && !isSweepAll && Number(amount) > 0 && (
               <p className="mt-1.5 text-xs text-gray-400">
-                Total: {(Number(amount) * recipients.length).toLocaleString()}{' '}
-                {tokenType === 'native' ? nativeLabel : 'Token'} across{' '}
-                {recipients.length} wallet{recipients.length > 1 ? 's' : ''}
+                Total: {(Number(amount) * privateKeys.length).toLocaleString()}{' '}
+                {nativeLabel} across {privateKeys.length} wallet{privateKeys.length > 1 ? 's' : ''}
               </p>
             )}
           </section>
+
+          {/* ── EVM-only: Gas settings ── */}
+          {isEVM && (
+            <section>
+              <label className="block text-sm font-medium text-gray-300 mb-3">
+                Gas Settings (Optional)
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label
+                    htmlFor="maxFee"
+                    className="block text-xs text-gray-500 mb-1"
+                  >
+                    Max Fee (Gwei)
+                  </label>
+                  <input
+                    id="maxFee"
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="Auto"
+                    value={maxFeeGwei}
+                    onChange={(e) => setMaxFeeGwei(e.target.value.replace(/[^0-9.]/g, ''))}
+                    className="input-field text-sm"
+                    disabled={running}
+                    key={`mf-${inputKey.current}`}
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="maxPriorityFee"
+                    className="block text-xs text-gray-500 mb-1"
+                  >
+                    Max Priority Fee (Gwei)
+                  </label>
+                  <input
+                    id="maxPriorityFee"
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="Auto"
+                    value={maxPriorityFeeGwei}
+                    onChange={(e) => setMaxPriorityFeeGwei(e.target.value.replace(/[^0-9.]/g, ''))}
+                    className="input-field text-sm"
+                    disabled={running}
+                    key={`mpf-${inputKey.current}`}
+                  />
+                </div>
+              </div>
+              <p className="mt-1.5 text-xs text-gray-500">
+                Leave empty to auto-detect from network. Sweep mode uses legacy gas pricing for deterministic fees.
+              </p>
+            </section>
+          )}
 
           {/* ── Actions ── */}
           <div className="flex gap-3 pt-2">
             <button
               type="button"
               disabled={!canSubmit}
-              onClick={handleDistribute}
+              onClick={handleCollect}
               className="btn-primary flex-1 flex items-center justify-center gap-2"
             >
               {running ? (
@@ -411,10 +424,10 @@ export default function Home() {
                       d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
                     />
                   </svg>
-                  Distributing...
+                  Collecting...
                 </>
               ) : (
-                'Start Distribution'
+                `Start Collection${isSweepAll ? ' (Sweep All)' : ''}`
               )}
             </button>
             {(progress.length > 0 || summary || error) && (
@@ -441,7 +454,7 @@ export default function Home() {
         {progress.length > 0 && (
           <div className="mt-6 glass p-6 md:p-8">
             <h2 className="text-lg font-semibold text-white mb-4">
-              Transaction Progress
+              Collection Progress
             </h2>
 
             <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
@@ -490,10 +503,10 @@ export default function Home() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-baseline gap-2">
                       <span className="font-mono text-xs truncate">
-                        {tx.recipient}
+                        {truncateAddress(tx.from) || `Wallet ${i + 1}`}
                       </span>
                       <span className="text-xs opacity-70 shrink-0">
-                        {tx.amount} {tx.symbol}
+                        {tx.amount ? `${tx.amount} ${tx.symbol}` : (tx.symbol || nativeLabel)}
                       </span>
                     </div>
                     {tx.error && (
@@ -523,7 +536,7 @@ export default function Home() {
               <div className="mt-4 pt-4 border-t border-white/10 flex items-center justify-between text-sm">
                 <div className="flex gap-4">
                   <span className="text-emerald-400">
-                    ✓ {summary.sent} sent
+                    ✓ {summary.collected} collected
                   </span>
                   {summary.failed > 0 && (
                     <span className="text-red-400">
@@ -531,9 +544,11 @@ export default function Home() {
                     </span>
                   )}
                 </div>
-                <span className="text-gray-500">
-                  {summary.sent + summary.failed} / {progress.length} complete
-                </span>
+                <div className="text-right">
+                  <span className="text-indigo-400">
+                    Total: {summary.totalAmount} {nativeLabel}
+                  </span>
+                </div>
               </div>
             )}
           </div>
