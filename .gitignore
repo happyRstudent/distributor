@@ -1,6 +1,38 @@
+# dependencies
 node_modules/
+.pnp
+.pnp.js
+
+# next.js
 .next/
-.env
-.env.local
+out/
+
+# production
+build/
+
+# misc
+.DS_Store
+*.pem
 *.tsbuildinfo
 next-env.d.ts
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# vercel
+.vercel
+
+# claude worktrees
+.claude/
+
+# deploy scripts (local)
+deploy.sh

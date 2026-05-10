@@ -65,11 +65,26 @@ If not set, the app uses public RPC endpoints by default.
 
 The app will execute transfers sequentially and show real-time progress with block explorer links for each transaction.
 
+## Deploy on Vercel
+
+The easiest way to deploy is via [Vercel](https://vercel.com):
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/happyRstudent/distributor)
+
+Or using the Vercel CLI:
+
+```bash
+npm i -g vercel
+vercel
+```
+
+> **Note:** Environment variables (`NEXT_PUBLIC_*_RPC_URL`) can be configured in the Vercel dashboard under **Settings → Environment Variables**.
+
 ## Tech Stack
 
 - [Next.js 14](https://nextjs.org/) (App Router)
 - [React 18](https://react.dev/)
-- [ethers.js](https://docs.ethers.org/) — EVM chain interaction
+- [ethers.js v6](https://docs.ethers.org/) — EVM chain interaction
 - [@solana/web3.js](https://solana-labs.github.io/solana-web3.js/) — Solana interaction
 - [@solana/spl-token](https://github.com/solana-labs/solana-program-library) — SPL token transfers
 - [Tailwind CSS](https://tailwindcss.com/)
@@ -77,11 +92,11 @@ The app will execute transfers sequentially and show real-time progress with blo
 
 ## Supported Chains
 
-| Chain              | Native Coin | Token Standard | Explorer           |
-| ------------------ | ----------- | -------------- | ------------------ |
-| Ethereum           | ETH         | ERC-20         | etherscan.io       |
-| BNB Smart Chain    | BNB         | BEP-20         | bscscan.com        |
-| Solana             | SOL         | SPL            | solscan.io         |
+| Chain              | Native Coin | Token Standard | Explorer         |
+| ------------------ | ----------- | -------------- | ---------------- |
+| Ethereum           | ETH         | ERC-20         | etherscan.io     |
+| BNB Smart Chain    | BNB         | BEP-20         | bscscan.com      |
+| Solana             | SOL         | SPL            | solscan.io       |
 
 ## Security
 
@@ -89,3 +104,7 @@ The app will execute transfers sequentially and show real-time progress with blo
 - Source code is open and verifiable
 - Always review transactions before signing (when using hardware wallets)
 - Test with small amounts first
+
+## License
+
+MIT
